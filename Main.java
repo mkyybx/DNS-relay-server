@@ -42,14 +42,14 @@ public class Main {
 			log.isCriticalOnly = !verbose;
 			log.showLog = debug;
 			if (!debug) {
-				if (SystemTray.isSupported()) { // 判断是否支持系统托盘
-					URL url = Main.class.getClass().getResource("/TrayIcon1.png"); // 获取图片所在的URL
-					ImageIcon icon = new ImageIcon(url); // 实例化图像对象
-					Image image = icon.getImage(); // 获得Image对象
-					TrayIcon trayIcon = new TrayIcon(image); // 创建托盘图标
-					trayIcon.setToolTip("DNS中继服务器"); // 添加工具提示文本
-					PopupMenu popupMenu = new PopupMenu(); // 创建弹出菜单
-					MenuItem exit = new MenuItem("退出"); // 创建菜单项
+				if (SystemTray.isSupported()) { 
+					URL url = Main.class.getClass().getResource("/TrayIcon1.png"); 
+					ImageIcon icon = new ImageIcon(url); 
+					Image image = icon.getImage(); 
+					TrayIcon trayIcon = new TrayIcon(image); 
+					trayIcon.setToolTip("DNS中继服务器"); 
+					PopupMenu popupMenu = new PopupMenu(); 
+					MenuItem exit = new MenuItem("退出"); 
 					MenuItem viewLog = new MenuItem("显示日志");
 					MenuItem about = new MenuItem("关于");
 					MenuItem clearCache = new MenuItem("清理缓存");
@@ -123,7 +123,7 @@ public class Main {
 			printHelp();
 		} catch (IOException e) {
 			// TODO Auto-generated catch block
-			JOptionPane.showMessageDialog(null, "IO错误!");
+			JOptionPane.showMessageDialog(null, "IO错误或端口绑定错误!");
 			System.out.println("IO错误!");
 			e.printStackTrace();
 		} catch (SQLException e) {

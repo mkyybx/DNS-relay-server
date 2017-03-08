@@ -6,6 +6,7 @@ import java.util.*;
 
 	class Question {
 		String name;
+		String name2;
 		char type = 0x0000;
 		char Class = 0x0000;
 		int offset;
@@ -136,13 +137,28 @@ import java.util.*;
 		int ttl = 0;
 		byte[] rdata;
 		
+		static byte[] swapIPv4Address(byte[] ip) {
+			//用于逆向解析
+			byte temp = ip[0];
+			ip[0] = ip[3];
+			ip[3] = temp;
+			temp = ip[1];
+			ip[1] = ip[2];
+			ip[2] = temp;
+			return ip;
+		}
+		
 		public String toString() {
 			String s = null;
-			try {
-				s = InetAddress.getByAddress(rdata).getHostAddress();
-			} catch (UnknownHostException e) {
-				
-			}
+			if (type == 0x0001 || type == 0x001c)
+				try {
+					s = InetAddress.getByAddress(rdata).getHostAddress();
+				} catch (UnknownHostException e) {
+					// TODO Auto-generated catch block
+					e.printStackTrace();
+				}
+			if (this.type == 0x000c)
+				s = name2;
 			return super.toString() + (s == null ? "" : s) + " " + "ttl=" + ttl + " ";
 		}
 		
@@ -193,6 +209,14 @@ import java.util.*;
 			length <<= 8;
 			length |= (packet[pointer++] & 0x000000ff);
 			rdata = new byte[length];
+			int pointer1 = pointer;
+			if (type == 0x000c) {
+				name2 = name;
+				findName(packet,pointer1);
+				String s = name;
+				name = name2;
+				name2 = s;
+			}
 			for (int j = 0; j < length; j++)
 				rdata[j] = packet[pointer++];
 			this.offset = pointer;
@@ -277,6 +301,15 @@ import java.util.*;
 		}
 	}
 
+final class DatagramIdentity {
+	char id;
+	SocketAddress addr;
+	
+	DatagramIdentity(char id, SocketAddress addr) {
+		this.id = id;
+		this.addr = addr;
+	}
+}
 
 public class Server {
 	static DatagramSocket serverSocket;
@@ -284,7 +317,7 @@ public class Server {
 	static DatagramPacket clientPacket;
 	private static Server server;
 	//hashtable线程安全
-	static Hashtable<Character, SocketAddress> idTable = new Hashtable<Character, SocketAddress>();
+	static Hashtable<Character, DatagramIdentity> idTable = new Hashtable<Character, DatagramIdentity>();
 	
 	//单例
 	private Server() {
@@ -309,7 +342,7 @@ public class Server {
 			clientPacket = new DatagramPacket(temp1, 512, recursiveServer, 53);
 			
 			//启动客户端
-			new Thread(new RunnableClient()).start();
+			new Thread(new Client()).start();
 			
 			//服务器端
 			while (true) {
@@ -348,34 +381,39 @@ final class Database {
 			new log("数据库初始化成功",true).print();
 		}
 	}
-	static Question[] inverseQuery(InetAddress address, boolean isIPv6) {
+	static ResourceRecord[] inverseQuery(InetAddress address) {
 		LinkedList<ResourceRecord> list = new LinkedList<ResourceRecord>();
 		try {
 			synchronized(Database.class) {
-				new log("数据库反向查询:\t" + address.getHostName(),false).print();
-				PreparedStatement st = connection.prepareStatement("Select * from " +( isIPv6 ? "aaaa" : "a" )+ " where rdata = ?");
+				new log("数据库反向查询:\t" + address.getHostAddress(),false).print();
+				PreparedStatement st = connection.prepareStatement("Select * from a where rdata = ?");
+				if (address.equals(RunnableServer.ALL_ZEROv4))//特殊设置，禁止查询0.0.0.0，容易造成攻击
+					return null;
 				st.setString(1, address.getHostAddress());
 				ResultSet rs = st.executeQuery();
-				if (rs.next() == false)
-					//找不到
-					return null;
-				else {
-					while (rs.next()) {
-						if (rs.getInt("ttl") < System.currentTimeMillis() / 1000 && rs.getInt("ttl") != -1) {
-							//超时
-							st = connection.prepareStatement("delete from " + (isIPv6 ? "aaaa" : "a") + " where name = ?");
-							st.setString(1, rs.getString("name"));
-							st.execute();
-							new log("记录\t" + rs.getString("name") + "->" + rs.getString("rdata") + "超时", true).print();
-						}
-						else {
-							new log("命中数据库:\t" + rs.getString("name") + "->" + rs.getString("rdata"),false).print();
-							list.add(new ResourceRecord(rs.getString("name"), (char)(isIPv6 ? 0x001c : 0x0001), (char)0x0001, rs.getInt("ttl") == -1 ? 9999 : (int)(rs.getInt("ttl") - System.currentTimeMillis() / 1000), InetAddress.getByName(rs.getString("rdata").trim()).getAddress()));
-						}
+				while (rs.next()) {
+					if (rs.getInt("ttl") < System.currentTimeMillis() / 1000 && rs.getInt("ttl") != -1) {
+						//超时
+						st = connection.prepareStatement("delete from a where name = ?");
+						st.setString(1, rs.getString("name"));
+						st.execute();
+						new log("记录\t" + rs.getString("name") + "->" + rs.getString("rdata") + "超时", true).print();
 					}
-					return (ResourceRecord[])list.toArray();
+					else {
+						new log("命中数据库:\t" + rs.getString("name") + "->" + rs.getString("rdata"),false).print();
+						ResourceRecord temp = new ResourceRecord(null, (char)(0x000c), (char)0x0001, rs.getInt("ttl") == -1 ? 9999 : (int)(rs.getInt("ttl") - System.currentTimeMillis() / 1000), null);
+						temp.name = rs.getString("name");
+						byte[] tempb = new byte[512];
+						int num = temp.writeName(tempb, 0);
+						temp.rdata = Arrays.copyOf(tempb, num + 1);
+						temp.name = InetAddress.getByAddress(ResourceRecord.swapIPv4Address(address.getAddress())).getHostAddress().concat(".in-addr.arpa");
+						list.add(temp);
+					}
 				}
+				ResourceRecord[] rr = new ResourceRecord[list.size()]; 
+				return list.isEmpty() ? null : (ResourceRecord[])list.toArray(rr);
 			}
+			
 		} catch (Exception ex) {
 			ex.printStackTrace();
 			return null;
@@ -413,7 +451,14 @@ final class Database {
 	static void update(ResourceRecord record) {
 		try {
 			synchronized(Database.class) {
-				if (record.ttl != 0 && ((record.type == 0x01 || record.type == 0x1c))) {//ttl为0不缓存
+				if (record.ttl != 0 && ((record.type == 0x01 || record.type == 0x1c || (record.type == 0x000c)))) {//ttl为0不缓存
+					if (record.type == 0x000c && record.name.endsWith(".in-addr.arpa")) {
+						record.name = record.name.substring(0, record.name.length() - 13);
+						record.rdata = InetAddress.getByName(record.name).getAddress();
+						ResourceRecord.swapIPv4Address(record.rdata);
+						record.name = record.name2;
+						record.type = 0x0001;
+					}
 					PreparedStatement st = connection.prepareStatement("select ttl from " + (record.type == 0x01 ? "a" : "aaaa") + " where name = ?");
 					st.setString(1, record.name.toString());
 					ResultSet rs = st.executeQuery();
@@ -441,43 +486,69 @@ final class Database {
 }
 
 final class RunnableClient implements Runnable {
+	byte[] data;
+	DatagramPacket packet;
+	RunnableClient(byte[] data, DatagramPacket packet) {
+		this.packet = packet;
+		this.data = data;
+	}
 
 	@Override
 	public void run() {
 		// TODO Auto-generated method stub
-		byte[] data = new byte[512];
-		DatagramPacket packet = new DatagramPacket(data, 512);
-		while (true) {
-			try {
-				StringBuilder sb = new StringBuilder();
-				Server.clientSocket.receive(packet);
-				Header header = new Header().getHeader(data, 0);
-				sb.append("收到上行DNS:" + header.toString());
-				if (header.qr == false || header.truncated == true || header.opcode != 0)
-					new log("上行收到错误报文！",true).print();
-				else {
-					//回传
-					SocketAddress addr = Server.idTable.get(header.id);
-					if (addr != null) {
-						//存在
-						Server.serverSocket.send(new DatagramPacket(data,packet.getLength(),addr));
-						//删除id
-						Server.idTable.remove(header.id);
-						
-						int pointer = header.offset;
-						//跳过query
-						for (int i = 0; i < header.qcount; i++)
-							pointer = new Question().getQuestion(data, pointer).offset;
-						//缓存
-						for (int i = 0; i < header.ancount; i++) {
-							ResourceRecord record = new ResourceRecord().getResourceRecord(data, pointer);
-							sb.append(record.toString());
-							pointer = record.offset;
-							Database.update(record);
-						}
+		try {
+			StringBuilder sb = new StringBuilder();
+			Header header = new Header().getHeader(data, 0);
+			sb.append("收到上行DNS:" + header.toString() + "->");
+			if (header.qr == false || header.truncated == true || header.opcode != 0)
+				new log("上行收到错误报文！",true).print();
+			else {
+				//回传
+				DatagramIdentity di = Server.idTable.get(header.id);
+				if (di != null) {
+					//存在
+					sb.append(" 0x" + Integer.toHexString((int)(di.id)) + ' ');
+					SocketAddress addr = di.addr;
+					data[0] = (byte) ((di.id >> 8) & 0x000000ff);
+					data[1] = (byte) (di.id & 0x000000ff);
+					Server.serverSocket.send(new DatagramPacket(data,packet.getLength(),addr));
+					//删除id
+					Server.idTable.remove(header.id);
+					
+					int pointer = header.offset;
+					//跳过query
+					for (int i = 0; i < header.qcount; i++)
+						pointer = new Question().getQuestion(data, pointer).offset;
+					//缓存
+					for (int i = 0; i < header.ancount; i++) {
+						ResourceRecord record = new ResourceRecord().getResourceRecord(data, pointer);
+						sb.append(record.toString());
+						pointer = record.offset;
+						Database.update(record);
 					}
-					new log(sb.toString(),false).print();
-				}	
+				}
+				new log(sb.toString(),false).print();
+			}	
+		} catch (IOException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+	}
+	
+}
+
+final class Client implements Runnable {
+
+	@Override
+	public void run() {
+		// TODO Auto-generated method stub
+		
+	while (true) {
+			try {
+				byte[] data = new byte[512];
+				DatagramPacket packet = new DatagramPacket(data, 512);
+				Server.clientSocket.receive(packet);
+				new Thread(new RunnableClient(data, packet)).start();
 			} catch (IOException e) {
 				// TODO Auto-generated catch block
 				e.printStackTrace();
@@ -516,20 +587,30 @@ final class RunnableServer implements Runnable {
 	}
 	
 	void recursiveQuery(Header header) throws IOException {
-		System.out.println(Server.idTable);
-		if (Server.idTable.contains(header.id)) {
+		char id = 0;
+		int times = -1;
+//		if (Server.idTable.contains(header.id)) {
+			while (++times < 65535) {
+				id = (char) (Math.random() * 65536);
+				if (!Server.idTable.contains(id))
+					break;
+			}
 			//凑巧重复了
-			new log("下行报文ID重复！",true).print();
-			sendError();
+			if (times == 65535) {
+				new log("下行报文ID重复！",true).print();
+				sendError();
+			}
+//		}
+		//存放映射关系
+		Server.idTable.put(times == -1 ? header.id : id, new DatagramIdentity(header.id, addr));
+		//转发
+		if (times != -1) {
+			data[0] = (byte) ((id >> 8) & 0x000000ff);
+			data[1] = (byte) (id & 0x000000ff);
 		}
-		else {
-			//存放映射关系
-			Server.idTable.put(header.id, addr);
-			//转发
-			Server.clientPacket.setData(data);
-			Server.clientSocket.send(Server.clientPacket);
-			new log("转发报文:" + header.toString(),false).print();
-		}
+		Server.clientPacket.setData(data);
+		Server.clientSocket.send(Server.clientPacket);
+		new log("转发报文:" + "\t(" + ((InetSocketAddress)addr).toString() + ')' + header.toString() + "-> 0x" + Integer.toHexString((int)(times == -1 ? header.id : id)),false).print();
 	}
 
 	@Override
@@ -537,24 +618,57 @@ final class RunnableServer implements Runnable {
 		// TODO Auto-generated method stub
 		Header header = new Header().getHeader(data, 0);
 		if (header.qr == true) //不应该是回复包
-			new log("下行报文为应答报文！",true).print();
+			new log("\t(" + ((InetSocketAddress)addr).toString() + ')' + "下行报文为应答报文！",true).print();
 		else {
 			try {
 				//暂不支持多question
 				if (header.qcount != 1 || header.ancount > 1 || (header.ancount == 1 && header.qcount != 0))  {
-					new log("下行报文报头不被支持！",true).print();
+					new log("\t(" + ((InetSocketAddress)addr).toString() + ')' + "下行报文报头不被支持！",true).print();
 					sendError();
 				}
 				else {
 					if (header.opcode == 0) {
 						//standard query
 						Question question = new Question().getQuestion(data, header.offset);
-						new log("收到下行报文:" + header.toString() + question.toString(),false).print();
+						new log("收到下行报文:" + "\t(" + ((InetSocketAddress)addr).toString() + ')' + header.toString() + question.toString(),false).print();
 						ResourceRecord address = null;
 						if (question.type == 1)
 							address = Database.standardQuery(question.name, false);
 						else if (question.type == 0x001c)
 							address = Database.standardQuery(question.name, true);
+						else if (question.type == 0x000c) {
+							if (question.name.endsWith(".in-addr.arpa")) {
+								//PTR类型反向查询，暂不支持IPv6
+								try {
+									byte[] ad = InetAddress.getByName(question.name.substring(0, question.name.length() - 13)).getAddress();
+									ResourceRecord.swapIPv4Address(ad);
+									ResourceRecord[] result = Database.inverseQuery(InetAddress.getByAddress(ad));
+									byte[] temp = Arrays.copyOf(data, 512);
+									temp[2] |= 0x80;
+									temp[2] &= 0xf9;
+									temp[3] = (byte)0x80;
+									StringBuilder sb = new StringBuilder();
+									int length = 0;
+									for (ResourceRecord record : result) {
+										byte[] temp1 = record.toByte();
+										if (temp1 == null) //过长
+											sendError();
+										else {
+											
+											System.arraycopy(temp1, 0, temp, data.length + length, temp1.length);
+											length += temp1.length;
+											sb.append(record.toString() + ' ');
+										}
+									}
+									temp[7] = (byte) result.length;
+									Server.serverSocket.send(new DatagramPacket(temp,length + data.length,addr));
+									new log("回复下行报文" + "\t(" + ((InetSocketAddress)addr).toString() + ')' + new Header().getHeader(temp, 0) + sb.toString(),false).print();
+									return;
+								} catch (Exception ex) {
+									address = null;
+								}
+							}
+						}
 						if (address == null) 
 							recursiveQuery(header);
 						else if (InetAddress.getByAddress(address.rdata).equals(ALL_ZEROv4) || InetAddress.getByAddress(address.rdata).equals(ALL_ZEROv6)) {
@@ -564,7 +678,7 @@ final class RunnableServer implements Runnable {
 							replyPacket[2] &= 0xfb;
 							replyPacket[3] = (byte) 0x85;
 							Server.serverSocket.send(new DatagramPacket(replyPacket,data.length,addr));
-							new log("屏蔽域名:\t" + question.name.toString(),true).print();
+							new log("屏蔽域名:" + "\t(" + ((InetSocketAddress)addr).toString() + ')' + question.name.toString(),true).print();
 						}
 						else {
 							//正常返回
@@ -578,38 +692,7 @@ final class RunnableServer implements Runnable {
 								sendError();
 							else System.arraycopy(temp1, 0, temp, data.length, temp1.length);
 							Server.serverSocket.send(new DatagramPacket(temp,temp.length,addr));
-							new log("回复下行报文" + new Header().getHeader(temp, 0) + address.toString(),false).print();
-						}
-					}
-					else if (header.opcode == 1) {
-						//inverse query
-						ResourceRecord question = new ResourceRecord().getResourceRecord(data, header.offset);
-						new log("收到下行报文:" + header.toString() + question.toString(),false).print();
-						Question[] list = null;
-						if (question.type == 1)
-							list = Database.inverseQuery(InetAddress.getByAddress(question.rdata), false);
-						else if (question.type == 0x001c)
-							list = Database.inverseQuery(InetAddress.getByAddress(question.rdata), true);
-						if (list == null) 
-							recursiveQuery(header);
-						else {
-							byte[] temp = Arrays.copyOf(data, 512);
-							temp[2] |= 0x80;
-							temp[2] &= 0xf9;
-							temp[3] = (byte)0x80;
-							int i = 0;
-							int pointer = data.length;
-							for (; i < list.length; i++) {
-								byte[] temp1 = list[i].toByte(0);
-								if (temp1 != null && pointer + temp1.length < 512) {
-									System.arraycopy(temp1, 0, temp, pointer, temp1.length);
-									pointer += temp1.length;
-								}
-								else break;
-							}
-							temp[5] = (byte) i;
-							Server.serverSocket.send(new DatagramPacket(temp,pointer,addr));
-							new log("回复下行报文",false).print();
+							new log("回复下行报文" + "\t(" + ((InetSocketAddress)addr).toString() + ')' + new Header().getHeader(temp, 0) + address.toString(),false).print();
 						}
 					}
 					else recursiveQuery(header);
